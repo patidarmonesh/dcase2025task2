@@ -1,7 +1,6 @@
 # ===================== INSTALL & IMPORT =====================
-
-# 1) Install the CLAP package from PyPI
-!pip install --quiet laion-clap
+# 1) Install compatible versions of torch, torchvision, timm, and laion-clap
+!pip install --quiet "torch>=2.0" "torchvision>=0.15" timm==0.9.10 laion-clap soundfile
 
 # 2) Standard imports
 import os
@@ -11,21 +10,18 @@ import pickle
 import torch
 import torchaudio
 from tqdm import tqdm
-from laion_clap import CLAP_Module
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Import CLAP after torch/torchvision/timm are initialized
+from laion_clap import CLAP_Module
 
 # ===================== LOAD CLAP MODEL =====================
-
-# We disable fusion here, but you can set enable_fusion=True if desired.
 model = CLAP_Module(enable_fusion=False, device=device)
 model.load_ckpt()  # Downloads & loads the default pretrained checkpoint
 
-
 # ===================== HELPERS =====================
-
 def resample_to_48k(wav: np.ndarray, sr: int) -> np.ndarray:
     """
     Ensure the waveform is 48 kHz mono float32.
@@ -41,7 +37,6 @@ def resample_to_48k(wav: np.ndarray, sr: int) -> np.ndarray:
     # Clamp to float32 in [-1, +1]
     wav = wav.astype(np.float32)
     return wav
-
 
 def extract_clap_embedding(wav: np.ndarray, sr: int) -> np.ndarray:
     """
@@ -65,9 +60,7 @@ def extract_clap_embedding(wav: np.ndarray, sr: int) -> np.ndarray:
         pass
     return embed[0]  # shape (D,)
 
-
 # ===================== TRACEABLE CLAP EMBEDDING EXTRACTION =====================
-
 def process_machine_split(machine: str, split: str,
                           in_root: str, out_root: str):
     """
@@ -119,12 +112,10 @@ def process_machine_split(machine: str, split: str,
     else:
         print(f"[EMPTY] No embeddings generated for {machine}/{split}")
 
-
 # ===================== MAIN =====================
-
 if __name__ == "__main__":
     # Adjust these root paths as needed:
-    IN_ROOT = "/kaggle/working/data/dcase2025t2/dev_data/processed"
+    IN_ROOT = "/kaggle/input/dcase2025/data/dcase2025t2/dev_data/processed"
     OUT_ROOT = "/kaggle/working/data/dcase2025t2/dev_data/processed"
 
     machine_types = ["ToyCar", "ToyTrain", "bearing", "fan", "gearbox", "slider", "valve"]
