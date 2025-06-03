@@ -84,7 +84,7 @@ def load_pca_data(base_dir):
     return torch.tensor(all_feats, dtype=torch.float32), fnames_list
 
 # Paths
-PCA_BASE = '/kaggle/working/dcase2025t2/dev_data/pca_128'
+PCA_BASE = '/kaggle/working/data/dcase2025t2/dev_data/pca_128'
 CHECKPOINT_DIR = '/kaggle/working/checkpoints'
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
@@ -132,11 +132,20 @@ for epoch in range(200):
     avg_vq_loss = total_vq_loss / len(dataset)
     print(f"Epoch {epoch+1:03d} | Avg Loss: {avg_loss:.4f} | Rec: {avg_rec_loss:.4f} | VQ: {avg_vq_loss:.4f} | Codes Used: {usage_ratio*100:.1f}%")
 
+    # --- Dead code reset after each epoch ---
+    dead_codes = set(range(model.quantizer.codebook.shape[0])) - set(torch.nonzero(code_counts).cpu().numpy().flatten().tolist())
+    if dead_codes:
+        print(f"Resetting {len(dead_codes)} dead codes...")
+        with torch.no_grad():
+            z_latent = model.encoder(z_pca_tensor[:max(10000, len(dead_codes))].to(device))
+            for i, code_idx in enumerate(dead_codes):
+                model.quantizer.codebook.data[code_idx] = z_latent[i % z_latent.shape[0]]
+
 # 5. Save model, codebook, and mapping
 torch.save(model.state_dict(), os.path.join(CHECKPOINT_DIR, 'vqvae_model.pth'))
 with open(os.path.join(CHECKPOINT_DIR, 'codebook.npy'), 'wb') as f:
     np.save(f, model.quantizer.codebook.detach().cpu().numpy())
-with open(os.path.join(CHECKPOINT_DIR, 'usage_mapping.pkl'), 'wb") as f:
+with open(os.path.join(CHECKPOINT_DIR, 'usage_mapping.pkl'), 'wb') as f:
     pickle.dump(filename_to_code, f)
 
 print("✅ Training complete. Model, codebook, and mapping saved.")
