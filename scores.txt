@@ -1,0 +1,13 @@
+└── Your Pipeline/
+    ├── branch_a/                # Segment-level scores for 1-sec clips
+    │   ├── s_AE.npy
+    │   └── filenames.pkl
+    ├── branch_c/                # Segment-level scores for 256ms clips
+    │   ├── s_C.npy
+    │   └── filenames.pkl
+    ├── file_level_scores/       # Aggregated scores per original file
+    │   ├── branch_a_scores.pkl
+    │   └── branch_c_scores.pkl
+    └── fusion/                  # Final outputs
+        ├── fused_scores.pkl
+        └── auc_results.txt
