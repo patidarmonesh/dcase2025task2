@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pickle
 
-# --- VectorQuantizer definition ---
+# ===================== MODEL DEFINITION (Matches Training) =====================
 class VectorQuantizer(nn.Module):
     def __init__(self, num_codes=128, code_dim=32, beta=1.0):
         super().__init__()
@@ -22,7 +22,6 @@ class VectorQuantizer(nn.Module):
         z_q_st = z + (z_q - z).detach()
         return z_q_st, vq_loss, indices, z_q
 
-# --- VQVAE definition ---
 class VQVAE(nn.Module):
     def __init__(self):
         super().__init__()
@@ -41,46 +40,52 @@ class VQVAE(nn.Module):
         )
 
     def forward(self, x):
-        z_latent = self.encoder(x)
-        z_q, vq_loss, indices, z_q_vec = self.quantizer(z_latent)
+        z = self.encoder(x)
+        z_q, vq_loss, indices, z_q_vec = self.quantizer(z)
         z_hat = self.decoder(z_q)
         rec_loss = F.mse_loss(z_hat, x)
-        total_loss = rec_loss + vq_loss
-        return z_hat, z_q, total_loss, indices
+        return z_hat, z_q, rec_loss + vq_loss, indices
 
-# --- Load trained model ---
+# ===================== INFERENCE PIPELINE =====================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = VQVAE().to(device)
-model.load_state_dict(torch.load("/kaggle/working/checkpoints/vqvae_model.pth", map_location=device))
-model.eval()
 
-# --- Loop over PCA dirs and process ---
-input_base = "/kaggle/working/dcase2025t2/dev_data/pca_128"
-output_base = "/kaggle/working/processed"
+def run_inference():
+    # Load trained model
+    model = VQVAE().to(device)
+    model.load_state_dict(torch.load("/kaggle/working/checkpoints/vqvae_model.pth", map_location=device))
+    model.eval()
 
-for root, _, files in os.walk(input_base):
-    for file in files:
-        if file == "z_pca.pickle":
-            z_path = os.path.join(root, file)
-            with open(z_path, "rb") as f:
-                data = pickle.load(f)
-            z_pca = torch.tensor(data['features'], dtype=torch.float32).to(device)
-            filenames = data['filenames']
+    # Process all PCA files
+    input_base = "/kaggle/working/data/dcase2025t2/dev_data/pca_128"
+    output_base = "/kaggle/working/processed"
+    
+    for root, _, files in os.walk(input_base):
+        for file in files:
+            if file == "z_pca.pickle":
+                # Load PCA features and filenames
+                z_path = os.path.join(root, file)
+                with open(z_path, "rb") as f:
+                    data = pickle.load(f)
+                z_pca = torch.tensor(data['features'], dtype=torch.float32).to(device)
+                filenames = data['filenames']
 
-            with torch.no_grad():
-                z_hat, z_q, _, indices = model(z_pca)
+                # Inference
+                with torch.no_grad():
+                    z_hat, z_q, _, indices = model(z_pca)
 
-            # Construct output directory path (preserve structure)
-            rel_dir = os.path.relpath(root, input_base)
-            out_dir = os.path.join(output_base, rel_dir)
-            os.makedirs(out_dir, exist_ok=True)
+                # Create output directory (preserve input structure)
+                rel_path = os.path.relpath(root, input_base)
+                out_dir = os.path.join(output_base, rel_path)
+                os.makedirs(out_dir, exist_ok=True)
 
-            # Save outputs in the working directory
-            np.save(os.path.join(out_dir, "z_hat.npy"), z_hat.cpu().numpy())
-            np.save(os.path.join(out_dir, "z_q.npy"), z_q.cpu().numpy())
-            np.save(os.path.join(out_dir, "vq_codes.npy"), indices.cpu().numpy())
-            with open(os.path.join(out_dir, "filenames.pkl"), "wb") as f:
-                pickle.dump(filenames, f)
-            print(f"[DONE] {z_path} → {out_dir}")
+                # Save with traceability
+                np.save(os.path.join(out_dir, "z_hat.npy"), z_hat.cpu().numpy())
+                np.save(os.path.join(out_dir, "z_q.npy"), z_q.cpu().numpy())
+                np.save(os.path.join(out_dir, "vq_codes.npy"), indices.cpu().numpy())
+                with open(os.path.join(out_dir, "filenames.pkl"), "wb") as f:
+                    pickle.dump(filenames, f)
+                print(f"Processed {len(filenames)} segments → {out_dir}")
 
-print("✅ All files processed and saved to /kaggle/working/processed/")
+if __name__ == "__main__":
+    run_inference()
+    print("✅ Inference complete. All outputs saved with full traceability.")
