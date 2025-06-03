@@ -66,17 +66,10 @@ class VQVAE(nn.Module):
 
     def forward(self, x):
         z = self.encoder(x)
-        if self.training:
-            z = z + 0.05 * torch.randn_like(z)
         z_q, vq_loss, indices = self.quantizer(z)
         x_hat = self.decoder(z_q)
         rec_loss = F.mse_loss(x_hat, x)
-        # Code usage regularization
-        unique_codes = torch.unique(indices)
-        usage_ratio = len(unique_codes) / self.quantizer.codebook.shape[0]
-        usage_reg = 0.1 * (1.0 - usage_ratio)
-        total_loss = rec_loss + vq_loss + usage_reg
-        return x_hat, total_loss, indices
+        return x_hat, vq_loss, rec_loss, indices
 
 # ===================== LOAD PCA FEATURES WITH FILENAMES =====================
 def load_pca_data(base_dir):
@@ -93,7 +86,7 @@ def load_pca_data(base_dir):
 # Paths
 PCA_BASE = '/kaggle/working/dcase2025t2/dev_data/pca_128'
 CHECKPOINT_DIR = '/kaggle/working/checkpoints'
-posix = os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 # 1. Load
 z_pca_tensor, filenames = load_pca_data(PCA_BASE)
@@ -105,40 +98,45 @@ loader  = DataLoader(dataset, batch_size=512, shuffle=True)
 # 3. Model & Optimizer
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 model = VQVAE().to(device)
-# Initialize codebook on first 10000 samples
 model.init_codebook(z_pca_tensor[:10000].to(device))
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
-# 4. Training Loop
-mapping = []  # to store (filename, code_idx) across all epochs
+# 4. Training Loop (with global code usage and robust mapping)
+filename_to_code = {}
 for epoch in range(200):
     model.train()
     total_loss = 0.0
-    codes_used = set()
+    total_rec_loss = 0.0
+    total_vq_loss = 0.0
+    code_counts = torch.zeros(model.quantizer.codebook.shape[0], device=device)
     for feats, fnames in loader:
         feats = feats.to(device)
         optimizer.zero_grad()
-        _, loss, indices = model(feats)
+        x_hat, vq_loss, rec_loss, indices = model(feats)
+        loss = rec_loss + vq_loss
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
         total_loss += loss.item() * feats.size(0)
+        total_rec_loss += rec_loss.item() * feats.size(0)
+        total_vq_loss += vq_loss.item() * feats.size(0)
+        # Update code usage and mapping
+        code_counts += torch.bincount(indices, minlength=code_counts.shape[0])
         for nm, idx in zip(fnames, indices.cpu().tolist()):
-            mapping.append((nm, idx))
-            codes_used.add(idx)
+            filename_to_code[nm] = idx  # Overwrite with latest code
+
+    usage_ratio = (code_counts > 0).sum().item() / code_counts.shape[0]
     avg_loss = total_loss / len(dataset)
-    print(f"Epoch {epoch+1:03d} | Avg Loss: {avg_loss:.4f} | Codes Used: {len(codes_used)}/128")
+    avg_rec_loss = total_rec_loss / len(dataset)
+    avg_vq_loss = total_vq_loss / len(dataset)
+    print(f"Epoch {epoch+1:03d} | Avg Loss: {avg_loss:.4f} | Rec: {avg_rec_loss:.4f} | VQ: {avg_vq_loss:.4f} | Codes Used: {usage_ratio*100:.1f}%")
 
 # 5. Save model, codebook, and mapping
-os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-# Model
 torch.save(model.state_dict(), os.path.join(CHECKPOINT_DIR, 'vqvae_model.pth'))
-# Codebook
 with open(os.path.join(CHECKPOINT_DIR, 'codebook.npy'), 'wb') as f:
     np.save(f, model.quantizer.codebook.detach().cpu().numpy())
-# Mapping
-with open(os.path.join(CHECKPOINT_DIR, 'usage_mapping.pkl'), 'wb') as f:
-    pickle.dump(mapping, f)
+with open(os.path.join(CHECKPOINT_DIR, 'usage_mapping.pkl'), 'wb") as f:
+    pickle.dump(filename_to_code, f)
 
 print("✅ Training complete. Model, codebook, and mapping saved.")
