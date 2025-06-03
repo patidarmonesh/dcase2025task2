@@ -1,25 +1,26 @@
 # ===================== INSTALLATION & SETUP =====================
 
-# 1) Uninstall any preinstalled torch, torchvision, torchaudio to avoid version conflicts
+# 1. Remove preinstalled torch, torchvision, torchaudio to avoid version conflicts
 !pip uninstall -y torch torchvision torchaudio
 
-# 2) Reinstall a known-good set compatible with CLAP/timm (CUDA 11.8 wheels)
+# 2. Install compatible torch/torchaudio/torchvision (CUDA 11.8 wheels)
 !pip install --quiet torch==2.0.1+cu118 torchvision==0.15.2+cu118 torchaudio==2.0.2 --extra-index-url https://download.pytorch.org/whl/cu118
 
-# 3) Install CLAP’s Python dependencies
+# 3. Install CLAP and audio dependencies
 !pip install --quiet timm transformers librosa soundfile h5py
+!pip install --quiet torchlibrosa
 
-# 4) Clone the official CLAP GitHub repository into /kaggle/working
+# 4. Clone the official CLAP repo into /kaggle/working
 !rm -rf /kaggle/working/CLAP
 !git clone https://github.com/LAION-AI/CLAP.git /kaggle/working/CLAP
 
-# 5) Install CLAP in editable mode
+# 5. Install CLAP in editable mode
 %cd /kaggle/working/CLAP
 !pip install -e .
 %cd -
 
 
-# ===================== IMPORTS & SAFETY FIXES =====================
+# ===================== IMPORTS & DEVICE SETUP =====================
 import os
 import numpy as np
 import soundfile as sf
@@ -28,17 +29,15 @@ import torch
 import torchaudio
 from tqdm import tqdm
 
-# --- PyTorch 2.6+ safe globals fix for CLAP checkpoints ---
+# PyTorch 2.6+ safe globals fix for CLAP checkpoints
 from numpy.core.multiarray import scalar, _reconstruct
 from numpy import dtype
 from numpy.dtypes import Float64DType, Float32DType
 from torch.serialization import add_safe_globals
-
 add_safe_globals([scalar, dtype, _reconstruct, Float64DType, Float32DType])
 
 import laion_clap
 
-# ===================== DEVICE SETUP =====================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
@@ -68,7 +67,7 @@ def extract_clap_embedding(wav: np.ndarray, sr: int) -> np.ndarray:
     return embed[0]
 
 def process_machine_split(machine: str, split: str, in_root: str, out_root: str):
-    """Process all audio files for a machine/split"""
+    """Process all audio files for a machine/split and save with traceability"""
     seg_dir = os.path.join(in_root, machine, split, "raw_segments")
     if not os.path.isdir(seg_dir):
         print(f"[SKIP] Missing directory: {seg_dir}")
@@ -79,6 +78,7 @@ def process_machine_split(machine: str, split: str, in_root: str, out_root: str)
     save_path = os.path.join(save_dir, "clap_embeddings.pickle")
 
     embeddings = []
+    filenames = []
     for fname in tqdm(sorted(os.listdir(seg_dir)), desc=f"{machine}/{split}"):
         if not fname.lower().endswith(".wav"):
             continue
@@ -90,14 +90,19 @@ def process_machine_split(machine: str, split: str, in_root: str, out_root: str)
                 print(f"[SKIP] Too short: {fname}")
                 continue
             embeddings.append(extract_clap_embedding(wav, sr))
+            filenames.append(fname)  # <-- Store the filename for traceability!
         except Exception as e:
             print(f"[ERROR] {machine}/{split}/{fname}: {e}")
 
     if embeddings:
         arr = np.stack(embeddings)
+        out_dict = {
+            "features": arr,
+            "filenames": filenames
+        }
         with open(save_path, "wb") as f:
-            pickle.dump(arr, f)
-        print(f"[SAVED] {save_path}: {arr.shape}")
+            pickle.dump(out_dict, f)
+        print(f"[SAVED] {save_path}: {arr.shape}, {len(filenames)} filenames")
     else:
         print(f"[EMPTY] No embeddings for {machine}/{split}")
 
@@ -111,3 +116,5 @@ splits = ["train", "test", "supplemental"]
 for machine in machine_types:
     for split in splits:
         process_machine_split(machine, split, IN_ROOT, OUT_ROOT)
+
+print("=== CLAP embedding extraction complete with traceability ===")
