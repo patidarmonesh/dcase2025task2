@@ -78,10 +78,9 @@ for root, _, files in os.walk(input_base):
             # Save outputs in the working directory
             np.save(os.path.join(out_dir, "z_hat.npy"), z_hat.cpu().numpy())
             np.save(os.path.join(out_dir, "z_q.npy"), z_q.cpu().numpy())
-            np.save(os.path.join(out_dir, "indices.npy"), indices.cpu().numpy())
+            np.save(os.path.join(out_dir, "vq_codes.npy"), indices.cpu().numpy())
             with open(os.path.join(out_dir, "filenames.pkl"), "wb") as f:
                 pickle.dump(filenames, f)
             print(f"[DONE] {z_path} → {out_dir}")
 
 print("✅ All files processed and saved to /kaggle/working/processed/")
-
