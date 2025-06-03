@@ -3,61 +3,65 @@ import numpy as np
 import pickle
 from sklearn.mixture import GaussianMixture
 
-# Use processed directory for GMM training and scoring
 input_base = "/kaggle/working/processed"
-checkpoint_path = "/kaggle/working/checkpoints/branch_a_gmm.pkl"
+checkpoint_base = "/kaggle/working/checkpoints/gmm_per_machine"
 machine_types = ["ToyCar", "ToyTrain", "bearing", "fan", "gearbox", "slider", "valve"]
 splits = ["train", "test", "supplemental"]
 
-# STEP 1: Collect z_q and filenames from train splits for all machines
-zq_train_all = []
-fnames_train_all = []
+os.makedirs(checkpoint_base, exist_ok=True)
+
 for machine in machine_types:
+    print(f"\n=== Processing {machine} ===")
+    # STEP 1: Collect z_q and filenames from train split
     train_dir = os.path.join(input_base, machine, "train")
     zq_path = os.path.join(train_dir, "z_q.npy")
     fnames_path = os.path.join(train_dir, "filenames.pkl")
-    if os.path.exists(zq_path) and os.path.exists(fnames_path):
-        z_q = np.load(zq_path)
-        with open(fnames_path, "rb") as f:
-            fnames = pickle.load(f)
-        zq_train_all.append(z_q)
-        fnames_train_all.extend(fnames)
-        print(f"[LOAD] {machine}/train: {z_q.shape}")
-    else:
+    if not (os.path.exists(zq_path) and os.path.exists(fnames_path)):
         print(f"[SKIP] {machine}/train: missing z_q.npy or filenames.pkl")
-if len(zq_train_all) == 0:
-    raise RuntimeError("No train z_q.npy files found! Please run VQ-VAE inference first.")
-zq_all = np.concatenate(zq_train_all, axis=0)  # shape: (N_train, 32)
+        continue
+    z_q = np.load(zq_path)
+    with open(fnames_path, "rb") as f:
+        fnames = pickle.load(f)
+    if len(fnames) != z_q.shape[0]:
+        print(f"[ERROR] {machine}/train: {len(fnames)} filenames vs {z_q.shape[0]} z_q vectors")
+        continue
 
-# STEP 2: Fit GMM
-gmm = GaussianMixture(n_components=5, covariance_type='full', random_state=42)
-gmm.fit(zq_all)
-print("✅ GMM trained on z_q, shape:", zq_all.shape)
+    # STEP 2: Fit GMM for this machine
+    gmm = GaussianMixture(n_components=5, covariance_type='full', random_state=42)
+    gmm.fit(z_q)
+    gmm_ckpt_path = os.path.join(checkpoint_base, f"gmm_{machine}.pkl")
+    with open(gmm_ckpt_path, "wb") as f:
+        pickle.dump(gmm, f)
+    print(f"✅ GMM trained & saved for {machine} (train shape: {z_q.shape})")
 
-# Save GMM
-os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-with open(checkpoint_path, "wb") as f:
-    pickle.dump(gmm, f)
-
-# STEP 3: Apply to all splits and save s_GMM with filenames
-for machine in machine_types:
+    # STEP 3: Score all splits for this machine
     for split in splits:
         dir_path = os.path.join(input_base, machine, split)
         zq_path = os.path.join(dir_path, "z_q.npy")
         fnames_path = os.path.join(dir_path, "filenames.pkl")
-        if os.path.exists(zq_path) and os.path.exists(fnames_path):
-            z_q = np.load(zq_path)
-            with open(fnames_path, "rb") as f:
-                filenames = pickle.load(f)
-            if len(filenames) != z_q.shape[0]:
-                print(f"[ERROR] Mismatch in {dir_path}: {len(filenames)} filenames vs {z_q.shape[0]} z_qs")
-                continue
-            s_gmm = -gmm.score_samples(z_q)  # shape: (n_clips,)
-            np.save(os.path.join(dir_path, "s_GMM.npy"), s_gmm)
-            with open(os.path.join(dir_path, "s_GMM.pkl"), "wb") as f:
-                pickle.dump({'scores': s_gmm, 'filenames': filenames}, f)
-            print(f"[SAVED] {dir_path} → s_GMM.npy & s_GMM.pkl shape: {s_gmm.shape}")
-        else:
-            print(f"[SKIP] {dir_path}: missing z_q.npy or filenames.pkl")
+        if not (os.path.exists(zq_path) and os.path.exists(fnames_path)):
+            print(f"[SKIP] {machine}/{split}: missing z_q.npy or filenames.pkl")
+            continue
+        z_q_split = np.load(zq_path)
+        with open(fnames_path, "rb") as f:
+            filenames_split = pickle.load(f)
+        if len(filenames_split) != z_q_split.shape[0]:
+            print(f"[ERROR] {machine}/{split}: {len(filenames_split)} filenames vs {z_q_split.shape[0]} z_q vectors")
+            continue
 
-print("✅ All splits processed. GMM scores and filenames saved traceably.")
+        # Score and normalize
+        s_gmm = -gmm.score_samples(z_q_split)
+        # Normalization (fit only on train split)
+        if split == "train":
+            mean_s = np.mean(s_gmm)
+            std_s = np.std(s_gmm) if np.std(s_gmm) > 0 else 1.0
+        s_gmm_norm = (s_gmm - mean_s) / std_s
+
+        # Save both raw and normalized scores
+        np.save(os.path.join(dir_path, "s_GMM.npy"), s_gmm)
+        np.save(os.path.join(dir_path, "s_GMM_norm.npy"), s_gmm_norm)
+        with open(os.path.join(dir_path, "s_GMM.pkl"), "wb") as f:
+            pickle.dump({'scores': s_gmm, 'scores_norm': s_gmm_norm, 'filenames': filenames_split}, f)
+        print(f"[SAVED] {machine}/{split}: {s_gmm.shape} scores (raw+norm)")
+
+print("\n✅ All machines and splits processed with full traceability and normalization!")
